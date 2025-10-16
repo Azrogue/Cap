@@ -1,0 +1,73 @@
+# Use Ubuntu base with proper toolchain for Windows ARM64 cross-compilation
+FROM ubuntu:22.04
+
+# Avoid interactive prompts
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Install system dependencies as specified in CONTRIBUTING.md
+RUN apt-get update && apt-get install -y \
+    curl \
+    wget \
+    git \
+    build-essential \
+    pkg-config \
+    libssl-dev \
+    # Windows cross-compilation requirements
+    clang \
+    lld \
+    # Node.js requirements
+    ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install Rust 1.88.0+ as specified in CONTRIBUTING.md
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y \
+    && . ~/.cargo/env \
+    && rustup target add aarch64-pc-windows-msvc
+
+# Install Node.js 20+ as specified in CONTRIBUTING.md  
+RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
+    && apt-get install -y nodejs
+
+# Install pnpm 8.10.5+ as specified in CONTRIBUTING.md
+RUN npm install -g pnpm@8.10.5
+
+# Set working directory and PATH
+WORKDIR /app
+ENV PATH="/root/.cargo/bin:$PATH"
+
+# Copy package files first for better Docker caching
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
+COPY apps/desktop/package.json ./apps/desktop/
+COPY packages/ ./packages/
+
+# Copy the rest of the project
+COPY . .
+
+# Create a proper postcss.config.cjs file to override the problematic one
+RUN echo 'module.exports = { plugins: { tailwindcss: {}, autoprefixer: {} } };' > apps/desktop/postcss.config.cjs
+
+# Install dependencies using proper pnpm version
+RUN pnpm install
+
+# Install missing dotenv-cli 
+RUN npm install -g dotenv-cli
+
+# Setup following CONTRIBUTING.md instructions
+RUN pnpm cap-setup
+
+# Create environment variables file (equivalent to pnpm env-setup)
+RUN echo "VITE_ENVIRONMENT=production" >> .env \
+    && echo "CAP_DESKTOP_SENTRY_URL=https://6a3b6a09e6ae976c2ad6fff710e88748@o4506859771527168.ingest.us.sentry.io/4508330917101568" >> .env \
+    && echo "NEXT_PUBLIC_WEB_URL=https://cap.so" >> .env \
+    && echo 'NEXTAUTH_URL=https://cap.so' >> .env \
+    && echo "NEXT_PUBLIC_CAP_AWS_REGION=us-east-1" >> .env \
+    && echo "NEXT_PUBLIC_CAP_AWS_BUCKET=cap-prod" >> .env
+
+# Copy .env to apps/desktop
+RUN cp .env apps/desktop/.env
+
+# Change to desktop directory
+WORKDIR /app/apps/desktop
+
+# Build using the project's own tauri:build script
+RUN pnpm tauri build --debug --target aarch64-pc-windows-msvc --no-bundle

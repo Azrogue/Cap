@@ -1,0 +1,142 @@
+name: Build Cap Desktop
+
+on:
+  push:
+    branches: [ main, develop ]
+    tags: ['v*']
+  pull_request:
+    branches: [ main, develop ]
+
+jobs:
+  # Build for multiple architectures
+  build-matrix:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            artifact_name: cap-desktop-windows-x64
+            ext: .exe
+          - os: windows-latest
+            target: aarch64-pc-windows-msvc
+            artifact_name: cap-desktop-windows-arm64
+            ext: .exe
+          - os: macos-latest
+            target: x86_64-apple-darwin
+            artifact_name: cap-desktop-macos-x64
+            ext: .app
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            artifact_name: cap-desktop-macos-arm64
+            ext: .app
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            artifact_name: cap-desktop-linux-x64
+            ext: ""
+
+    runs-on: ${{ matrix.os }}
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Install Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install pnpm
+        run: npm install -g pnpm@8.10.5
+
+      - name: Install system dependencies (Linux)
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.0-dev libappindicator3-dev librsvg2-dev patchelf
+
+      - name: Install system dependencies (macOS)
+        if: matrix.os == 'macos-latest'
+        run: |
+          brew install cmake
+
+      - name: Cache dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.pnpm-store
+            node_modules
+          key: ${{ runner.os }}-pnpm-${{ hashFiles('**/pnpm-lock.yaml') }}
+          restore-keys: |
+            ${{ runner.os }}-pnpm-
+
+      - name: Install dependencies
+        run: pnpm install
+
+      - name: Setup Cap environment
+        run: pnpm cap-setup
+
+      - name: Create .env file
+        run: |
+          echo "VITE_ENVIRONMENT=production" >> .env
+          echo "CAP_DESKTOP_SENTRY_URL=https://6a3b6a09e6ae976c2ad6fff710e88748@o4506859771527168.ingest.us.sentry.io/4508330917101568" >> .env
+          echo "NEXT_PUBLIC_WEB_URL=https://cap.so" >> .env
+          echo 'NEXTAUTH_URL=https://cap.so' >> .env
+          echo "NEXT_PUBLIC_CAP_AWS_REGION=us-east-1" >> .env
+          echo "NEXT_PUBLIC_CAP_AWS_BUCKET=cap-prod" >> .env
+
+      - name: Build desktop app
+        run: |
+          cd apps/desktop
+          pnpm tauri build --target ${{ matrix.target }} --release
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact_name }}
+          path: apps/desktop/src-tauri/target/${{ matrix.target }}/release/bundle/**/*
+
+      - name: Generate Release Assets (Windows)
+        if: startsWith(matrix.target, 'x86_64-pc-windows-msvc') && github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
+        run: |
+          cd apps/desktop/src-tauri/target/${{ matrix.target }}/release/bundle
+          mv cap-desktop.msi cap-desktop-${{ github.ref_name }}.msi
+          mv cap-desktop.exe cap-desktop-${{ github.ref_name }}-setup.exe
+
+      - name: Upload Release Assets (Windows)
+        if: startsWith(matrix.target, 'x86_64-pc-windows-msvc') && github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            apps/desktop/src-tauri/target/${{ matrix.target }}/release/bundle/cap-desktop-${{ github.ref_name }}.msi
+            apps/desktop/src-tauri/target/${{ matrix.target }}/release/bundle/cap-desktop-${{ github.ref_name }}-setup.exe
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # Quick smoke test on Windows
+  smoke-test:
+    needs: build-matrix
+    runs-on: windows-latest
+    if: github.event_name == 'push'
+    steps:
+      - name: Download Windows artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: cap-desktop-windows-x64
+          path: ./
+
+      - name: Extract and run smoke test
+        run: |
+          cap-desktop-setup.exe /S
+          Start-Sleep -s 10
+          tasklist | findstr "cap-desktop"
+          taskkill /F /IM "cap-desktop.exe" 2>$null || true

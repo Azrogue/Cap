@@ -1,0 +1,23 @@
+# Dockerfile for Windows x64 build (simpler)
+FROM mcr.microsoft.com/windows/servercore:ltsc2022
+
+# Install chocolatey
+RUN powershell -Command \
+    Set-ExecutionPolicy Bypass -Scope Process -Force; \
+    [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.ServicePointManager]::SecurityProtocol -bor 3072; \
+    iex ((New-Object System.Net.WebClient).DownloadString('https://community.chocolatey.org/install.ps1'))
+
+# Install dependencies
+RUN choco install -y nodejs git rust visualstudio2019buildtools
+
+# Set working directory
+WORKDIR C:/app
+
+# Copy source
+COPY . .
+
+# Install dependencies and build
+RUN npm install -g pnpm@8.10.5
+RUN pnpm install
+RUN pnpm cap-setup
+RUN pnpm tauri build --debug --target x86_64-pc-windows-msvc --no-bundle
