@@ -105,7 +105,16 @@ jobs:
           echo "NEXT_PUBLIC_CAP_AWS_REGION=us-east-1" >> .env
           echo "NEXT_PUBLIC_CAP_AWS_BUCKET=cap-prod" >> .env
       
-      # Étape 10: Vérification du code avec Rustfmt et Clippy (uniquement pour release)
+      # Étape 10: Diagnostic des dépendances pour ARM64
+      - name: Check ARM64 dependencies
+        run: |
+          echo "=== Checking ARM64 target support ==="
+          cd apps/desktop/src-tauri
+          cargo check --target aarch64-pc-windows-msvc --no-default-features --quiet
+          echo "=== Checking specific dependencies ==="
+          cargo tree --target aarch64-pc-windows-msvc --format "{p}" | grep -E "(whisper|scap|ffmpeg|direct3d)"
+      
+      # Étape 11: Vérification du code avec Rustfmt et Clippy (uniquement pour release)
       - name: Check code formatting and linting
         if: matrix.build_type == 'release'
         run: |
@@ -113,14 +122,30 @@ jobs:
           cargo fmt --all -- --check
           cargo clippy --target aarch64-pc-windows-msvc -- -D warnings
       
-      # Étape 11: Build de l'application desktop pour Windows ARM64
+      # Étape 12: Build de l'application desktop pour Windows ARM64
       - name: Build desktop app (Windows ARM64 - ${{ matrix.build_type }})
         run: |
           cd apps/desktop
-          pnpm tauri build --target aarch64-pc-windows-msvc ${{ matrix.build_flag }} ${{ matrix.bundle_flag }}
+          echo "=== Starting Tauri build for ARM64 ==="
+          echo "Build type: ${{ matrix.build_type }}"
+          echo "Target: aarch64-pc-windows-msvc"
+          echo "Build flags: ${{ matrix.build_flag }} ${{ matrix.bundle_flag }}"
+          
+          # Tentative de build avec capture d'erreurs détaillée
+          pnpm tauri build --target aarch64-pc-windows-msvc ${{ matrix.build_flag }} ${{ matrix.bundle_flag }} 2>&1 | tee build-${{ matrix.build_type }}.log
+          
+          # Vérification du résultat
+          if [ $? -eq 0 ]; then
+            echo "=== Build successful ==="
+          else
+            echo "=== Build failed ==="
+            echo "Checking for common ARM64 issues..."
+            grep -i "error" build-${{ matrix.build_type }}.log | head -20
+            exit 1
+          fi
         continue-on-error: ${{ matrix.build_type == 'debug' }}
       
-      # Étape 12: Upload des artefacts de build
+      # Étape 13: Upload des artefacts de build
       - name: Upload ${{ matrix.build_type }} artifacts
         uses: actions/upload-artifact@v4
         if: always()
@@ -128,6 +153,7 @@ jobs:
           name: ${{ matrix.artifact_name }}-${{ github.run_number }}
           # Chemin différent selon le type de build
           path: |
+            apps/desktop/build-${{ matrix.build_type }}.log
             apps/desktop/src-tauri/target/aarch64-pc-windows-msvc/${{ matrix.build_type }}/bundle/**/
             apps/desktop/src-tauri/target/aarch64-pc-windows-msvc/${{ matrix.build_type }}/cap-desktop.exe
           retention-days: ${{ matrix.retention_days }}

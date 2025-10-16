@@ -4,7 +4,7 @@ rustflags = ["-C", "target-cpu=native"]
 
 [target.aarch64-pc-windows-msvc]
 # Specific optimizations for Windows ARM64
-rustflags = ["-C", "link-arg=/CARTO_TERM_COLOR=always"]
+rustflags = ["-C", "target-cpu=neoverse-n1", "-C", "link-arg=/CARGO_TERM_COLOR=always"]
 
 [target.x86_64-pc-windows-msvc]
 # Optimizations for Windows x64
