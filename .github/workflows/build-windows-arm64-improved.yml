@@ -64,28 +64,31 @@ jobs:
             ${{ runner.os }}-cargo-${{ matrix.build_type }}-
             ${{ runner.os }}-cargo-
       
-      # Étape 4: Installation de Node.js avec configuration optimisée
+      # Étape 4: Installation de Node.js sans cache pnpm
       - name: Install Node.js
         uses: actions/setup-node@v4
         with:
           node-version: '20'  # Version requise par le projet
-          cache: 'pnpm'       # Utilise pnpm pour le cache (plus efficace que npm)
       
       # Étape 4.5: Configuration spécifique pour Windows
       - name: Configure Windows environment
         shell: powershell
         run: |
-          echo "Configuring Windows environment for ARM64 builds"
-          echo "NODE_OPTIONS=$env:NODE_OPTIONS --max-old-space-size=4096" >> $env:GITHUB_ENV
+          Write-Host "Configuring Windows environment for ARM64 builds"
+          echo "NODE_OPTIONS=--max-old-space-size=4096" >> $env:GITHUB_ENV
           echo "RUST_BACKTRACE=1" >> $env:GITHUB_ENV
           echo "CARGO_TERM_COLOR=always" >> $env:GITHUB_ENV
       
       # Étape 5: Installation de pnpm avec version spécifique
       - name: Install pnpm
+        shell: powershell
         run: |
-          npm install -g pnpm@10.5.2  # Version spécifiée dans package.json
-          echo "PNPM_PATH=$(npm config get prefix)" >> $GITHUB_ENV
-          echo "$PNPM_PATH" >> $GITHUB_PATH
+          Write-Host "Installing pnpm..."
+          npm install -g pnpm@10.5.2
+          $pnpmPath = npm config get prefix
+          echo "PNPM_PATH=$pnpmPath" >> $env:GITHUB_ENV
+          echo "$pnpmPath" >> $env:GITHUB_PATH
+          pnpm --version
       
       # Étape 6: Configuration du cache pour les dépendances pnpm
       - name: Cache pnpm dependencies
