@@ -1,0 +1,184 @@
+name: Build Windows ARM64 (Improved)
+
+# Déclencheur : s'exécute sur push vers la branche feature/windows-arm64-build
+on:
+  push:
+    branches: [ feature/windows-arm64-build ]
+  workflow_dispatch:  # Permet les déclenchements manuels pour les tests
+
+# Variables d'environnement globales pour le workflow
+env:
+  RUST_BACKTRACE: 1
+  CARGO_TERM_COLOR: always
+  NODE_OPTIONS: '--max-old-space-size=4096'
+
+jobs:
+  # Job de build pour Windows ARM64 avec configurations debug et release
+  build-windows-arm64:
+    runs-on: windows-latest
+    
+    # Stratégie de build pour supporter les builds debug et release
+    strategy:
+      fail-fast: false
+      matrix:
+        build_type: [debug, release]
+        include:
+          - build_type: debug
+            artifact_name: cap-desktop-windows-arm64-debug
+            retention_days: 7
+            build_flag: --debug
+            bundle_flag: --no-bundle
+          - build_type: release
+            artifact_name: cap-desktop-windows-arm64-release
+            retention_days: 30
+            build_flag: --release
+            bundle_flag: ""
+    
+    steps:
+      # Étape 1: Checkout du code source
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          # Récupère tout l'historique pour les builds corrects
+          fetch-depth: 0
+      
+      # Étape 2: Installation de Rust avec la cible ARM64
+      - name: Install Rust with ARM64 target
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          # Cible spécifique pour Windows ARM64
+          targets: aarch64-pc-windows-msvc
+          # Cache des dépendances Rust pour accélérer les builds futurs
+          components: rustfmt, clippy
+      
+      # Étape 3: Configuration du cache pour les dépendances Rust
+      - name: Cache Rust dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ matrix.build_type }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-${{ matrix.build_type }}-
+            ${{ runner.os }}-cargo-
+      
+      # Étape 4: Installation de Node.js avec configuration optimisée
+      - name: Install Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'  # Version requise par le projet
+          cache: 'pnpm'       # Utilise pnpm pour le cache (plus efficace que npm)
+      
+      # Étape 5: Installation de pnpm avec version spécifique
+      - name: Install pnpm
+        run: npm install -g pnpm@10.5.2  # Version spécifiée dans package.json
+      
+      # Étape 6: Configuration du cache pour les dépendances pnpm
+      - name: Cache pnpm dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.pnpm-store
+            node_modules
+            .turbo
+          key: ${{ runner.os }}-pnpm-${{ hashFiles('**/pnpm-lock.yaml') }}
+          restore-keys: |
+            ${{ runner.os }}-pnpm-
+      
+      # Étape 7: Installation des dépendances du projet
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+      
+      # Étape 8: Configuration de l'environnement Cap
+      - name: Setup Cap environment
+        run: pnpm cap-setup
+      
+      # Étape 9: Création du fichier .env avec les variables d'environnement
+      - name: Create .env file
+        run: |
+          echo "VITE_ENVIRONMENT=production" >> .env
+          echo "CAP_DESKTOP_SENTRY_URL=https://6a3b6a09e6ae976c2ad6fff710e88748@o4506859771527168.ingest.us.sentry.io/4508330917101568" >> .env
+          echo "NEXT_PUBLIC_WEB_URL=https://cap.so" >> .env
+          echo 'NEXTAUTH_URL=https://cap.so' >> .env
+          echo "NEXT_PUBLIC_CAP_AWS_REGION=us-east-1" >> .env
+          echo "NEXT_PUBLIC_CAP_AWS_BUCKET=cap-prod" >> .env
+      
+      # Étape 10: Vérification du code avec Rustfmt et Clippy (uniquement pour release)
+      - name: Check code formatting and linting
+        if: matrix.build_type == 'release'
+        run: |
+          cd apps/desktop/src-tauri
+          cargo fmt --all -- --check
+          cargo clippy --target aarch64-pc-windows-msvc -- -D warnings
+      
+      # Étape 11: Build de l'application desktop pour Windows ARM64
+      - name: Build desktop app (Windows ARM64 - ${{ matrix.build_type }})
+        run: |
+          cd apps/desktop
+          pnpm tauri build --target aarch64-pc-windows-msvc ${{ matrix.build_flag }} ${{ matrix.bundle_flag }}
+        continue-on-error: ${{ matrix.build_type == 'debug' }}
+      
+      # Étape 12: Upload des artefacts de build
+      - name: Upload ${{ matrix.build_type }} artifacts
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ${{ matrix.artifact_name }}-${{ github.run_number }}
+          # Chemin différent selon le type de build
+          path: |
+            apps/desktop/src-tauri/target/aarch64-pc-windows-msvc/${{ matrix.build_type }}/bundle/**/
+            apps/desktop/src-tauri/target/aarch64-pc-windows-msvc/${{ matrix.build_type }}/cap-desktop.exe
+          retention-days: ${{ matrix.retention_days }}
+          # Compression pour réduire la taille des artefacts
+          if-no-files-found: warn
+      
+      # Étape 13: Génération des métadonnées de build
+      - name: Generate build metadata
+        if: matrix.build_type == 'release'
+        run: |
+          echo "BUILD_DATE=$(date -u +"%Y-%m-%dT%H:%M:%SZ")" >> $GITHUB_ENV
+          echo "COMMIT_SHA=${{ github.sha }}" >> $GITHUB_ENV
+          echo "RUN_NUMBER=${{ github.run_number }}" >> $GITHUB_ENV
+      
+      # Étape 14: Création d'un fichier de métadonnées pour le build release
+      - name: Create release metadata
+        if: matrix.build_type == 'release'
+        run: |
+          cat > build-metadata.json << EOF
+          {
+            "build_date": "${{ env.BUILD_DATE }}",
+            "commit_sha": "${{ env.COMMIT_SHA }}",
+            "run_number": "${{ env.RUN_NUMBER }}",
+            "target": "aarch64-pc-windows-msvc",
+            "build_type": "release",
+            "version": "$(cd apps/desktop/src-tauri && cargo metadata --no-deps --format-version 1 | jq -r '.packages[0].version')"
+          }
+          EOF
+      
+      # Étape 15: Upload des métadonnées pour le build release
+      - name: Upload release metadata
+        if: matrix.build_type == 'release'
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-metadata-${{ github.run_number }}
+          path: build-metadata.json
+          retention-days: 30
+
+  # Job de nettoyage et de rapport (optionnel)
+  build-summary:
+    needs: build-windows-arm64
+    runs-on: ubuntu-latest
+    if: always()
+    
+    steps:
+      - name: Build Summary
+        run: |
+          echo "## Windows ARM64 Build Summary" >> $GITHUB_STEP_SUMMARY
+          echo "- **Build Status**: ${{ needs.build-windows-arm64.result }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Target**: aarch64-pc-windows-msvc" >> $GITHUB_STEP_SUMMARY
+          echo "- **Build Types**: Debug & Release" >> $GITHUB_STEP_SUMMARY
+          echo "- **Runner**: windows-latest" >> $GITHUB_STEP_SUMMARY
+          echo "- **Node Version**: 20" >> $GITHUB_STEP_SUMMARY
+          echo "- **Rust Target**: aarch64-pc-windows-msvc" >> $GITHUB_STEP_SUMMARY
